@@ -4,6 +4,7 @@
 # Grafo tre
 import dataclasses
 import re
+from collections import defaultdict
 from pathlib import Path
 from pprint import pprint
 from typing import NamedTuple, Literal
@@ -305,9 +306,114 @@ def execute(ast: AST) -> None:
                 raise ValueError(f"Unknown statement {statement}")
 
 
+@dataclasses.dataclass
+class LlvmIrCompilerState:
+    _vars: dict[str, int] = dataclasses.field(
+        default_factory=lambda: defaultdict(lambda: 0)
+    )
+    _tmp_var_index: int = 0
+
+    def get_next_var(self, var: str) -> str:
+        next_value = self._vars[var]
+        self._vars[var] += 1
+        return f"%{var}.{next_value}"
+
+    def get_previous_var(self, var: str) -> str:
+        return f"%{var}.{self._vars[var] - 1}"
+
+    def get_next_tmp_var(self) -> str:
+        next_value = self._tmp_var_index
+        self._tmp_var_index += 1
+        return f"%tmp.{next_value}"
+
+    def get_previous_tmp_var(self) -> str:
+        return f"%tmp.{self._tmp_var_index - 1}"
+
+
+def build_llvm_ir_expression(
+    state: LlvmIrCompilerState, expression: Expression
+) -> list[str]:
+    instructions = []
+    match expression:
+        case Variable(variable_name):
+            instructions.append(
+                f"{state.get_next_tmp_var()} = add i32 0, {state.get_previous_var(variable_name)}"
+            )
+        case Number(number_value):
+            instructions.append(
+                f"{state.get_next_tmp_var()} = add i32 0, {number_value}"
+            )
+        case ArithmeticExpression(action, arguments):
+            arguments_tmp_var_indexes = []
+            for argument in arguments:
+                argument_instructions = build_llvm_ir_expression(state, argument)
+                arguments_tmp_var_indexes.append(state.get_previous_tmp_var())
+                instructions.extend(argument_instructions)
+
+            match action:
+                case "+":
+                    instruction_opcode = "add"
+                case "-":
+                    instruction_opcode = "sub"
+                case "*":
+                    instruction_opcode = "mul"
+                case "/":
+                    instruction_opcode = "sdiv"
+                case _:
+                    raise ValueError(f"Unknown action: {action}")
+            index1, index2 = arguments_tmp_var_indexes
+            instruction = f"{state.get_next_tmp_var()} = {instruction_opcode} i32 {index1}, {index2}"
+            instructions.append(instruction)
+        case InputExpression():
+            result_addr = state.get_next_tmp_var()
+            instructions.extend([
+                f'{result_addr} = alloca i32, align 4',
+                f'store i32 0, ptr {result_addr}, align 4',
+                f'call i32 (ptr, ...) @__isoc99_scanf(ptr noundef @scanFormat, ptr noundef {result_addr})',
+                f'{state.get_next_tmp_var()} = load i32, ptr {result_addr}, align 4',
+            ])
+        case _:
+            raise ValueError(f"Unknown expression: {expression}")
+    return instructions
+
+
+def build_llvm_ir(ast: AST) -> str:
+    state = LlvmIrCompilerState()
+
+    instructions = []
+    for statement in ast.statements:
+        match statement:
+            case AssignVariable(variable_name, expression):
+                exp_instructions = build_llvm_ir_expression(state, expression)
+                exp_result_index = state.get_previous_tmp_var()
+                instruction = f"{state.get_next_var(variable_name)} = add i32 0, {exp_result_index}"
+
+                instructions.extend(exp_instructions)
+                instructions.append(instruction)
+            case PrintExpression(expression):
+                exp_instructions = build_llvm_ir_expression(state, expression)
+                exp_result_index = state.get_previous_tmp_var()
+                instruction = f"{state.get_next_tmp_var()} = call i32 (i8*, ...)* @printf(i8* getelementptr inbounds ([2 x i8], [2 x i8]* @formatString , i32 0, i32 0), i32 {exp_result_index})"
+
+                instructions.extend(exp_instructions)
+                instructions.append(instruction)
+    instructions.append("ret i32 0")
+
+    result = ""
+    result += r'@formatString = private constant [4 x i8] c"%d\0A\00"' + "\n"
+    result += "declare i32 @printf(ptr noundef, ...)\n"
+    result += r'@scanFormat = private unnamed_addr constant [3 x i8] c"%d\00", align 1' + '\n'
+    result += "declare i32 @__isoc99_scanf(ptr noundef, ...)\n"
+    result += "define i32 @main() {\n"
+    for instruction in instructions:
+        result += "  " + instruction + "\n"
+    result += "}\n"
+    return result
+
+
 source = """
 As uno = I + II*III
-As de = C
+As de = Anagnosi
 As tre = uno + de
 Grafo tre
 Grafo tre / X
@@ -332,8 +438,12 @@ ast = parse_ast(tokens)
 pprint(ast)
 print()
 
-print("Executing AST (via interpreter)")
-execute(ast)
-print()
+# print("Executing AST (via interpreter)")
+# execute(ast)
+# print()
+
+print("Compiling to LLVM IR")
+llvm_ir = build_llvm_ir(ast)
+Path("output.ll").write_text(llvm_ir)
 
 print("Done!")
