@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "roman-pl"
+version = "0.1.0"
+description = ""
+authors = ["Alexander Bespalov <discrimy.off@gmail.com>"]
+readme = "README.md"
+packages = [{include = "roman_pl"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
